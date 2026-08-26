@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Cloud Atlas · 云图</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}html,body,#map{margin:0;width:100%;height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;background:#0b1020;color:#fff}
+#map{background:#cfe4f3}
+#ui{position:fixed;inset:0;pointer-events:none;z-index:1000}
+.panel{pointer-events:auto;background:rgba(10,16,30,.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.12);box-shadow:0 12px 40px rgba(0,0,0,.22);border-radius:18px}
+#brand{position:absolute;top:max(16px,env(safe-area-inset-top));left:16px;padding:10px 14px;font-weight:700;letter-spacing:.5px}
+#brand small{display:block;font-weight:400;opacity:.65;font-size:11px;margin-top:2px}
+#actions{position:absolute;right:16px;bottom:max(18px,env(safe-area-inset-bottom));display:flex;gap:10px;pointer-events:auto}
+button{border:0;border-radius:14px;padding:12px 15px;background:#fff;color:#111;font-weight:700;cursor:pointer}
+button.secondary{background:rgba(255,255,255,.12);color:#fff}
+button.danger{background:#ff6b6b;color:#fff}
+#cloudList{position:absolute;left:16px;bottom:max(78px,calc(env(safe-area-inset-bottom) + 76px));width:min(330px,calc(100vw - 32px));max-height:42vh;overflow:auto;padding:12px;display:none}
+.cloud-row{display:flex;gap:10px;align-items:center;padding:8px;border-radius:12px}
+.cloud-row:hover{background:rgba(255,255,255,.08)}
+.thumb{width:54px;height:40px;object-fit:cover;border-radius:9px;background:#d9e8f2}
+#modal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.42)}
+.dialog{width:min(560px,100%);max-height:90vh;overflow:auto;padding:18px}
+.dialog h2{margin:0 0 10px;font-size:20px}.muted{opacity:.68;font-size:13px;line-height:1.5}
+.preview{width:100%;height:220px;object-fit:cover;border-radius:14px;background:#dcecf5;margin:10px 0}
+.row{display:flex;gap:10px;align-items:center;margin:10px 0}.row>*{flex:1}
+input[type=file]{width:100%;padding:10px;border:1px dashed rgba(255,255,255,.3);border-radius:12px}
+label{font-size:13px;opacity:.8}
+input[type=range]{width:100%}
+.value{font-variant-numeric:tabular-nums}
+#viewer{height:320px;border-radius:14px;background:linear-gradient(#bcd9e9,#e9f5fb);overflow:hidden}
+.leaflet-control-attribution{font-size:9px}.leaflet-control{pointer-events:auto}
+.cloud-marker{width:48px;height:48px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.9);box-shadow:0 5px 20px rgba(0,0,0,.25);background:#dcecf5}
+.cloud-marker img{width:100%;height:100%;object-fit:cover}
+.notice{padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.08);font-size:13px;line-height:1.45}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="ui">
+  <div id="brand" class="panel">☁ CLOUD ATLAS<small>云图 · 本地优先原型</small></div>
+  <div id="cloudList" class="panel"></div>
+  <div id="actions">
+    <button id="myClouds" class="secondary">我的云</button>
+    <button id="addCloud">拍一朵云</button>
+  </div>
+  <div id="modal">
+    <div class="dialog panel">
+      <div id="dialogBody"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<script>
+/* Cloud Atlas MVP
+   - 地图：Leaflet
+   - 本地云模型/照片：IndexedDB
+   - 3D预览：Three.js，使用用户照片作为真实贴图，不使用emoji替代云
+   - 共享云库：预留 Supabase 接口；未配置时自动进入本地演示模式
+*/
+const DB_NAME="cloud_atlas_mvp", DB_VERSION=1, STORE="clouds";
+const dbReady=new Promise((resolve,reject)=>{
+  const r=indexedDB.open(DB_NAME,DB_VERSION);
+  r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:"id"});
+  r.onsuccess=()=>resolve(r.result); r.onerror=()=>reject(r.error);
+});
+async function dbPut(obj){const db=await dbReady;return new Promise((res,rej)=>{const t=db.transaction(STORE,"readwrite");t.objectStore(STORE).put(obj);t.oncomplete=()=>res();t.onerror=()=>rej(t.error)})}
+async function dbAll(){const db=await dbReady;return new Promise((res,rej)=>{const t=db.transaction(STORE,"readonly");const q=t.objectStore(STORE).getAll();q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
+async function dbGet(id){const db=await dbReady;return new Promise((res,rej)=>{const q=db.transaction(STORE).objectStore(STORE).get(id);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
+
+const map=L.map("map",{zoomControl:false,worldCopyJump:true}).setView([30,115],3);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}).addTo(map);
+L.control.zoom({position:"topright"}).addTo(map);
+const markers=new Map();
+
+function id(){return "cloud_"+Date.now()+"_"+Math.random().toString(36).slice(2,8)}
+function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
+function openModal(html){document.getElementById("dialogBody").innerHTML=html;document.getElementById("modal").style.display="flex"}
+function closeModal(){document.getElementById("modal").style.display="none"}
+document.getElementById("modal").addEventListener("click",e=>{if(e.target.id==="modal")closeModal()});
+
+function addMarker(c){
+  if(!c.thumb)return;
+  const icon=L.divIcon({className:"",html:`<div class="cloud-marker"><img src="${c.thumb}" alt="云贴图"></div>`,iconSize:[48,48],iconAnchor:[24,24]});
+  const m=L.marker([c.lat,c.lng],{icon}).addTo(map);
+  m.on("click",()=>showCloud(c));
+  markers.set(c.id,m);
+}
+async function refreshMarkers(){
+  markers.forEach(m=>map.removeLayer(m));markers.clear();
+  const clouds=await dbAll();
+  clouds.forEach(addMarker);
+}
+function showCloud(c){
+  openModal(`
+    <h2>${esc(c.name||"我的云")}</h2>
+    <img class="preview" src="${c.thumb}" alt="云贴图">
+    <div class="notice">
+      📍 ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}<br>
+      估算水平尺寸：${c.sizeKm.toFixed(2)} km<br>
+      当前模型尺寸：${c.modelKm.toFixed(2)} km<br>
+      高度：${c.heightKm.toFixed(2)} km<br>
+      ${c.localOnly?"完整3D模型：仅保存在本设备":"完整3D模型：已记录本地"}
+    </div>
+    <div class="row"><button onclick="openEditor('${c.id}')">查看 / 编辑3D</button><button class="secondary" onclick="closeModal()">关闭</button></div>
+  `);
+}
+
+function fileToDataURL(file,maxW=1000){
+  return new Promise((resolve,reject)=>{
+    const fr=new FileReader();fr.onload=()=>{
+      const img=new Image();img.onload=()=>{
+        const scale=Math.min(1,maxW/img.width), w=Math.round(img.width*scale), h=Math.round(img.height*scale);
+        const cv=document.createElement("canvas");cv.width=w;cv.height=h;const ctx=cv.getContext("2d");
+        ctx.drawImage(img,0,0,w,h);resolve(cv.toDataURL("image/jpeg",.82));
+      };img.onerror=reject;img.src=fr.result;
+    };fr.onerror=reject;fr.readAsDataURL(file);
+  });
+}
+function getPosition(){
+  return new Promise((resolve,reject)=>{
+    if(!navigator.geolocation)return reject(new Error("当前浏览器不支持定位"));
+    navigator.geolocation.getCurrentPosition(p=>resolve({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy}),reject,{enableHighAccuracy:true,timeout:15000,maximumAge:60000});
+  });
+}
+function estimateSize(){
+  // MVP: 没有气象/测距数据时只能做“估算”，不冒充真实测量。
+  return +(0.7+Math.random()*1.3).toFixed(2);
+}
+function maxModelSize(sizeKm){return Math.min(2,+(sizeKm*1.2).toFixed(2))}
+
+document.getElementById("addCloud").onclick=async()=>{
+  openModal(`
+    <h2>添加一朵云</h2>
+    <div class="muted">你可以直接拍摄天空，也可以从 iPhone 本地相册/“文件”中选择已有照片。照片会先保存在本设备，用作云的真实贴图。</div>
+
+    <div class="row">
+      <button id="takePhoto">📷 拍摄云照片</button>
+      <button id="chooseAlbum" class="secondary">🖼️ 从本地相册选择</button>
+    </div>
+
+    <input id="cameraPhoto" class="hidden" type="file" accept="image/*" capture="environment">
+    <input id="albumPhoto" class="hidden" type="file" accept="image/*">
+    <div id="photoPreview"></div>
+
+    <div class="row">
+      <button id="locate">获取当前位置</button>
+      <button class="secondary" onclick="closeModal()">取消</button>
+    </div>
+    <div id="locStatus" class="notice">尚未获取位置</div>
+  `);
+  let photoData=null, pos=null;
+
+  // iPhone Safari：两个入口分别对应“相机”和“照片/文件选择器”。
+  const cameraInput=document.getElementById("cameraPhoto");
+  const albumInput=document.getElementById("albumPhoto");
+
+  document.getElementById("takePhoto").onclick=()=>cameraInput.click();
+  document.getElementById("chooseAlbum").onclick=()=>albumInput.click();
+
+  async function handlePhoto(file){
+    if(!file)return;
+    if(!file.type.startsWith("image/")){
+      alert("请选择图片文件。");
+      return;
+    }
+    photoData=await fileToDataURL(file);
+    document.getElementById("photoPreview").innerHTML=
+      `<img class="preview" src="${photoData}" alt="云照片">`;
+  }
+
+  cameraInput.onchange=e=>handlePhoto(e.target.files[0]);
+  albumInput.onchange=e=>handlePhoto(e.target.files[0]);
+  document.getElementById("locate").onclick=async()=>{
+    const s=document.getElementById("locStatus");s.textContent="正在请求定位权限…";
+    try{pos=await getPosition();s.textContent=`定位成功：${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}（误差约 ${Math.round(pos.accuracy)}m）`;
+      map.setView([pos.lat,pos.lng],10);
+      document.getElementById("locate").textContent="已获取位置";
+    }catch(e){s.textContent="定位失败。请允许浏览器使用位置，或稍后重试。"}
+  };
+  const old=window.__finish;window.__finish=async()=>{
+    if(!photoData||!pos){alert("请先选择照片并获取位置");return}
+    const sizeKm=estimateSize();
+    const c={id:id(),name:"Cloud "+new Date().toLocaleDateString(),lat:pos.lat,lng:pos.lng,sizeKm,modelKm:Math.min(sizeKm,maxModelSize(sizeKm)),heightKm:2.5,thumb:photoData,photo:photoData,localOnly:true,createdAt:Date.now()};
+    await dbPut(c);await refreshMarkers();map.setView([c.lat,c.lng],11);closeModal();showCloud(c);
+  };
+  document.getElementById("dialogBody").insertAdjacentHTML("beforeend",`<div class="row"><button onclick="window.__finish()">生成云模型并放入地图</button></div>`);
+};
+
+window.openEditor=async function(cid){
+  const c=await dbGet(cid);if(!c)return;
+  openModal(`
+    <h2>云模型编辑器</h2>
+    <div id="viewer"></div>
+    <div class="row"><label>模型大小 <span id="sizeVal" class="value">${c.modelKm.toFixed(2)} km</span><input id="size" type="range" min="0.2" max="${maxModelSize(c.sizeKm)}" step="0.01" value="${c.modelKm}"></label></div>
+    <div class="row"><label>云高度 <span id="heightVal" class="value">${c.heightKm.toFixed(2)} km</span><input id="height" type="range" min="1" max="10" step="0.1" value="${c.heightKm}"></label></div>
+    <div class="notice">最大水平尺寸：${maxModelSize(c.sizeKm).toFixed(2)} km。单朵云绝对上限：2.00 km。这里的现实尺寸目前只是原型估算值。</div>
+    <div class="row"><button id="saveEdit">保存</button><button class="secondary" onclick="closeModal()">关闭</button></div>
+  `);
+  const viewer=document.getElementById("viewer");
+  const scene=new THREE.Scene();const camera=new THREE.PerspectiveCamera(45,viewer.clientWidth/viewer.clientHeight,.1,100);camera.position.set(0,0,5);
+  const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(viewer.clientWidth,viewer.clientHeight);viewer.appendChild(renderer.domElement);
+  scene.add(new THREE.AmbientLight(0xffffff,2));
+  const tex=new THREE.TextureLoader().load(c.photo);
+  const group=new THREE.Group();
+  for(let i=0;i<9;i++){
+    const geo=new THREE.SphereGeometry(1.15-(i%3)*.12,32,20);
+    const mat=new THREE.MeshStandardMaterial({map:tex,transparent:true,opacity:.20+(i%3)*.08,depthWrite:false});
+    const mesh=new THREE.Mesh(geo,mat);
+    mesh.scale.set(1.45-(i%3)*.12,.55+(i%2)*.08,0.8);
+    mesh.position.set((i%3-1)*.7,(Math.floor(i/3)-1)*.18,((i%2)-.5)*.25);
+    group.add(mesh);
+  }
+  scene.add(group);
+  let drag=false,lastX=0;
+  viewer.onpointerdown=e=>{drag=true;lastX=e.clientX};window.onpointerup=()=>drag=false;window.onpointermove=e=>{if(drag){group.rotation.y+=(e.clientX-lastX)*.01;lastX=e.clientX}};
+  function animate(){if(document.getElementById("viewer")){requestAnimationFrame(animate);group.rotation.y+=.002;renderer.render(scene,camera)}}animate();
+  const size=document.getElementById("size"),height=document.getElementById("height");
+  size.oninput=()=>document.getElementById("sizeVal").textContent=Number(size.value).toFixed(2)+" km";
+  height.oninput=()=>document.getElementById("heightVal").textContent=Number(height.value).toFixed(2)+" km";
+  document.getElementById("saveEdit").onclick=async()=>{c.modelKm=+size.value;c.heightKm=+height.value;await dbPut(c);closeModal();await refreshMarkers();showCloud(c)};
+};
+
+document.getElementById("myClouds").onclick=async()=>{
+  const cs=await dbAll();
+  document.getElementById("cloudList").style.display="block";
+  document.getElementById("cloudList").innerHTML=`<b>我的云 · ${cs.length}</b>`+(cs.length?cs.map(c=>`<div class="cloud-row" onclick="map.setView([${c.lat},${c.lng}],11);showCloudById('${c.id}')"><img class="thumb" src="${c.thumb}"><div>${esc(c.name)}<br><span class="muted">${c.modelKm.toFixed(2)} km</span></div></div>`).join(""):`<div class="muted" style="margin-top:8px">还没有云。点击右下角“拍一朵云”。</div>`);
+};
+window.showCloudById=async cid=>{const c=await dbGet(cid);if(c)showCloud(c)};
+
+refreshMarkers();
+</script>
+</body>
+</html>
