@@ -14,7 +14,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-
 .panel{pointer-events:auto;background:rgba(10,16,30,.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.12);box-shadow:0 12px 40px rgba(0,0,0,.22);border-radius:18px}
 #brand{position:absolute;top:max(16px,env(safe-area-inset-top));left:16px;padding:10px 14px;font-weight:700;letter-spacing:.5px}
 #brand small{display:block;font-weight:400;opacity:.65;font-size:11px;margin-top:2px}
-#actions{position:absolute;right:16px;bottom:max(18px,env(safe-area-inset-bottom));display:flex;gap:10px}
+#actions{position:absolute;right:16px;bottom:max(18px,env(safe-area-inset-bottom));display:flex;gap:10px;pointer-events:auto}
 button{border:0;border-radius:14px;padding:12px 15px;background:#fff;color:#111;font-weight:700;cursor:pointer}
 button.secondary{background:rgba(255,255,255,.12);color:#fff}
 button.danger{background:#ff6b6b;color:#fff}
@@ -32,7 +32,7 @@ label{font-size:13px;opacity:.8}
 input[type=range]{width:100%}
 .value{font-variant-numeric:tabular-nums}
 #viewer{height:320px;border-radius:14px;background:linear-gradient(#bcd9e9,#e9f5fb);overflow:hidden}
-.leaflet-control-attribution{font-size:9px}
+.leaflet-control-attribution{font-size:9px}.leaflet-control{pointer-events:auto}
 .cloud-marker{width:48px;height:48px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.9);box-shadow:0 5px 20px rgba(0,0,0,.25);background:#dcecf5}
 .cloud-marker img{width:100%;height:100%;object-fit:cover}
 .notice{padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.08);font-size:13px;line-height:1.45}
@@ -137,19 +137,46 @@ function maxModelSize(sizeKm){return Math.min(2,+(sizeKm*1.2).toFixed(2))}
 
 document.getElementById("addCloud").onclick=async()=>{
   openModal(`
-    <h2>拍摄 / 上传一朵云</h2>
-    <div class="muted">第一版使用你拍摄的真实照片作为云贴图。完整模型参数和原图优先保存在本设备。</div>
-    <input id="photo" type="file" accept="image/*" capture="environment">
+    <h2>添加一朵云</h2>
+    <div class="muted">你可以直接拍摄天空，也可以从 iPhone 本地相册/“文件”中选择已有照片。照片会先保存在本设备，用作云的真实贴图。</div>
+
+    <div class="row">
+      <button id="takePhoto">📷 拍摄云照片</button>
+      <button id="chooseAlbum" class="secondary">🖼️ 从本地相册选择</button>
+    </div>
+
+    <input id="cameraPhoto" class="hidden" type="file" accept="image/*" capture="environment">
+    <input id="albumPhoto" class="hidden" type="file" accept="image/*">
     <div id="photoPreview"></div>
-    <div class="row"><button id="locate">获取当前位置</button><button class="secondary" onclick="closeModal()">取消</button></div>
+
+    <div class="row">
+      <button id="locate">获取当前位置</button>
+      <button class="secondary" onclick="closeModal()">取消</button>
+    </div>
     <div id="locStatus" class="notice">尚未获取位置</div>
   `);
   let photoData=null, pos=null;
-  document.getElementById("photo").onchange=async e=>{
-    if(!e.target.files[0])return;
-    photoData=await fileToDataURL(e.target.files[0]);
-    document.getElementById("photoPreview").innerHTML=`<img class="preview" src="${photoData}" alt="云照片">`;
-  };
+
+  // iPhone Safari：两个入口分别对应“相机”和“照片/文件选择器”。
+  const cameraInput=document.getElementById("cameraPhoto");
+  const albumInput=document.getElementById("albumPhoto");
+
+  document.getElementById("takePhoto").onclick=()=>cameraInput.click();
+  document.getElementById("chooseAlbum").onclick=()=>albumInput.click();
+
+  async function handlePhoto(file){
+    if(!file)return;
+    if(!file.type.startsWith("image/")){
+      alert("请选择图片文件。");
+      return;
+    }
+    photoData=await fileToDataURL(file);
+    document.getElementById("photoPreview").innerHTML=
+      `<img class="preview" src="${photoData}" alt="云照片">`;
+  }
+
+  cameraInput.onchange=e=>handlePhoto(e.target.files[0]);
+  albumInput.onchange=e=>handlePhoto(e.target.files[0]);
   document.getElementById("locate").onclick=async()=>{
     const s=document.getElementById("locStatus");s.textContent="正在请求定位权限…";
     try{pos=await getPosition();s.textContent=`定位成功：${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}（误差约 ${Math.round(pos.accuracy)}m）`;
